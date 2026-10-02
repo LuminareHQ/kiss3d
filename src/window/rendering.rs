@@ -1,7 +1,5 @@
 //! Rendering functionality.
 
-#![allow(clippy::await_holding_refcell_ref)]
-
 use crate::camera::{Camera2d, Camera3d, FixedView3d};
 use crate::context::Context;
 use crate::event::WindowEvent;
@@ -65,9 +63,22 @@ impl Window {
             .await
     }
 
+    /// Renders one 3D frame synchronously, without kiss3d's frame pacing.
+    ///
+    /// Skips unavailable surface frames without retrying; returns `true` until
+    /// the window closes. VSync and GPU submission can still block.
+    pub fn sync_render_3d(&mut self, scene: &mut SceneNode3d, camera: &mut impl Camera3d) -> bool {
+        self.sync_render(Some(scene), None, Some(camera), None, None, None)
+    }
+
     pub async fn render_2d(&mut self, scene: &mut SceneNode2d, camera: &mut impl Camera2d) -> bool {
         self.render(None, Some(scene), None, Some(camera), None, None)
             .await
+    }
+
+    /// Synchronous counterpart of [`Self::render_2d`]; see [`Self::sync_render_3d`].
+    pub fn sync_render_2d(&mut self, scene: &mut SceneNode2d, camera: &mut impl Camera2d) -> bool {
+        self.sync_render(None, Some(scene), None, Some(camera), None, None)
     }
 
     /// Renders a 2D scene and runs a post-processing effect over the result.
@@ -83,6 +94,16 @@ impl Window {
         post: &mut dyn PostProcessingEffect,
     ) -> bool {
         self.render_2d_with_chain(scene, camera, &mut [post]).await
+    }
+
+    /// Synchronous counterpart of [`render_2d_with`](Self::render_2d_with).
+    pub fn sync_render_2d_with(
+        &mut self,
+        scene: &mut SceneNode2d,
+        camera: &mut impl Camera2d,
+        post: &mut dyn PostProcessingEffect,
+    ) -> bool {
+        self.sync_render_2d_with_chain(scene, camera, &mut [post])
     }
 
     /// Renders a 2D scene through an ordered chain of post-processing effects.
@@ -102,6 +123,17 @@ impl Window {
             .await
     }
 
+    /// Synchronous counterpart of
+    /// [`render_2d_with_chain`](Self::render_2d_with_chain).
+    pub fn sync_render_2d_with_chain(
+        &mut self,
+        scene: &mut SceneNode2d,
+        camera: &mut impl Camera2d,
+        chain: &mut [&mut dyn PostProcessingEffect],
+    ) -> bool {
+        self.sync_render_chain(None, Some(scene), None, Some(camera), None, chain)
+    }
+
     /// Renders a 3D scene through an ordered chain of post-processing effects.
     /// See [`render_2d_with_chain`](Self::render_2d_with_chain).
     pub async fn render_3d_with_chain(
@@ -112,6 +144,17 @@ impl Window {
     ) -> bool {
         self.render_chain(Some(scene), None, Some(camera), None, None, chain)
             .await
+    }
+
+    /// Synchronous counterpart of
+    /// [`render_3d_with_chain`](Self::render_3d_with_chain).
+    pub fn sync_render_3d_with_chain(
+        &mut self,
+        scene: &mut SceneNode3d,
+        camera: &mut impl Camera3d,
+        chain: &mut [&mut dyn PostProcessingEffect],
+    ) -> bool {
+        self.sync_render_chain(Some(scene), None, Some(camera), None, None, chain)
     }
 
     pub async fn render(
@@ -136,13 +179,77 @@ impl Window {
             .await
     }
 
+    /// Synchronous counterpart of [`render`](Self::render).
+    pub fn sync_render(
+        &mut self,
+        scene: Option<&mut SceneNode3d>,
+        scene_2d: Option<&mut SceneNode2d>,
+        camera: Option<&mut dyn Camera3d>,
+        camera_2d: Option<&mut dyn Camera2d>,
+        renderer: Option<&mut dyn Renderer3d>,
+        post_processing: Option<&mut dyn PostProcessingEffect>,
+    ) -> bool {
+        let mut single;
+        let chain: &mut [&mut dyn PostProcessingEffect] = match post_processing {
+            Some(p) => {
+                single = [p];
+                &mut single
+            }
+            None => &mut [],
+        };
+        self.sync_render_chain(scene, scene_2d, camera, camera_2d, renderer, chain)
+    }
+
     /// The general render entry point: an optional 3D scene, an optional 2D scene,
     /// their cameras, an optional custom 3D renderer, and an ordered post-processing
     /// `chain` (empty = none). The single-scene/effect helpers wrap this.
+    pub async fn render_chain(
+        &mut self,
+        scene: Option<&mut SceneNode3d>,
+        scene_2d: Option<&mut SceneNode2d>,
+        camera: Option<&mut dyn Camera3d>,
+        camera_2d: Option<&mut dyn Camera2d>,
+        renderer: Option<&mut dyn Renderer3d>,
+        post_processing: &mut [&mut dyn PostProcessingEffect],
+    ) -> bool {
+        let keep_open = self.render_chain_impl(
+            scene,
+            scene_2d,
+            camera,
+            camera_2d,
+            renderer,
+            post_processing,
+            true,
+        );
+        Self::wait_for_next_frame().await;
+        keep_open
+    }
+
+    /// Synchronous counterpart of [`render_chain`](Self::render_chain).
+    pub fn sync_render_chain(
+        &mut self,
+        scene: Option<&mut SceneNode3d>,
+        scene_2d: Option<&mut SceneNode2d>,
+        camera: Option<&mut dyn Camera3d>,
+        camera_2d: Option<&mut dyn Camera2d>,
+        renderer: Option<&mut dyn Renderer3d>,
+        post_processing: &mut [&mut dyn PostProcessingEffect],
+    ) -> bool {
+        self.render_chain_impl(
+            scene,
+            scene_2d,
+            camera,
+            camera_2d,
+            renderer,
+            post_processing,
+            false,
+        )
+    }
+
     // `scene`/`camera` are only taken mutably (via `as_deref_mut`) by the
     // `rt_switcher` block below; without that feature the `mut` is unused.
     #[cfg_attr(not(feature = "rt_switcher"), allow(unused_mut))]
-    pub async fn render_chain(
+    fn render_chain_impl(
         &mut self,
         mut scene: Option<&mut SceneNode3d>,
         scene_2d: Option<&mut SceneNode2d>,
@@ -150,6 +257,7 @@ impl Window {
         camera_2d: Option<&mut dyn Camera2d>,
         renderer: Option<&mut dyn Renderer3d>,
         post_processing: &mut [&mut dyn PostProcessingEffect],
+        retry_surface: bool,
     ) -> bool {
         #[cfg(feature = "rt_switcher")]
         if let (Some(mut rt), Some(camera), Some(scene)) = (
@@ -162,7 +270,7 @@ impl Window {
             // This is useful so we can restore the correct state depending on
             // the switch input handling.
             self.raytracer.1 = true;
-            let result = self.raytrace_3d(scene, camera, &mut rt).await;
+            let result = self.raytrace_3d_impl(scene, camera, &mut rt, retry_surface);
             if self.raytracer.0.is_none() && self.raytracer.1 {
                 self.raytracer.0 = Some(rt);
             }
@@ -182,11 +290,11 @@ impl Window {
             camera_2d,
             renderer,
             post_processing,
+            retry_surface,
         )
-        .await
     }
 
-    async fn render_single_frame(
+    fn render_single_frame(
         &mut self,
         mut scene: Option<&mut SceneNode3d>,
         mut scene_2d: Option<&mut SceneNode2d>,
@@ -194,6 +302,7 @@ impl Window {
         camera_2d: &mut dyn Camera2d,
         mut renderer: Option<&mut dyn Renderer3d>,
         post_processing: &mut [&mut dyn PostProcessingEffect],
+        retry_surface: bool,
     ) -> bool {
         // Frame timing: CPU wall-clock for the whole frame (and submit/present
         // below) plus per-pass GPU timestamps recorded into the GPU timer. The
@@ -215,12 +324,12 @@ impl Window {
         let offscreen = self.hidden;
 
         // Acquire the surface texture for visible windows. A just-created
-        // window may not be presentable yet, so `acquire_next_frame` retries
-        // until it is.
+        // window may not be presentable yet. Managed rendering retries at
+        // startup; synchronous rendering lets the caller schedule another attempt.
         let frame = if offscreen {
             None
         } else {
-            match self.acquire_next_frame() {
+            match self.acquire_next_frame(retry_surface) {
                 Some(frame) => Some(frame),
                 None => return !self.should_close(),
             }
@@ -1292,8 +1401,8 @@ impl Window {
             }
         });
 
-        // Stored before the wasm frame-pacing wait below, so `total` reflects the
-        // render work and not the idle wait for the next animation frame.
+        // Stored before the managed entry point's frame-pacing wait, so `total`
+        // reflects the render work and not the idle wait for the next frame.
         self.last_timings = Some(RenderTimings {
             renderer: "Rasterizer",
             frame_wall,
@@ -1302,30 +1411,6 @@ impl Window {
             cpu_present,
             gpu_steps: self.gpu_timer.last(),
         });
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            use wasm_bindgen::JsCast;
-            use web_sys::wasm_bindgen::closure::Closure;
-
-            if let Some(window) = web_sys::window() {
-                let (s, r) = oneshot::channel();
-
-                let closure = Closure::once(move || s.send(()).unwrap());
-
-                window
-                    .request_animation_frame(closure.as_ref().unchecked_ref())
-                    .unwrap();
-
-                r.await.unwrap();
-            }
-        }
-
-        // iOS's analogue of the requestAnimationFrame wait above: the app
-        // future is polled once per winit loop turn (see `window::ios`), so
-        // yielding here paces the render loop to one frame per turn.
-        #[cfg(target_os = "ios")]
-        super::ios::next_frame().await;
 
         !self.should_close()
     }
@@ -1337,11 +1422,12 @@ impl Window {
     /// [`RayTracer`] to dispatch the path-tracing pass into its HDR accumulation
     /// buffer and tonemap the result into the frame's output view. Text overlays
     /// are still rendered on top.
-    pub(super) async fn raytrace_3d_frame(
+    pub(super) fn raytrace_3d_frame(
         &mut self,
         scene: &mut SceneNode3d,
         camera: &mut dyn Camera3d,
         raytracer: &mut RayTracer,
+        retry_surface: bool,
     ) -> bool {
         // Wall-clock frame-to-frame period (true FPS), the metric the per-pass GPU
         // timestamps don't capture. See `render_single_frame`.
@@ -1358,7 +1444,7 @@ impl Window {
         let frame = if offscreen {
             None
         } else {
-            match self.acquire_next_frame() {
+            match self.acquire_next_frame(retry_surface) {
                 Some(frame) => Some(frame),
                 None => return !self.should_close(),
             }
@@ -1544,6 +1630,10 @@ impl Window {
             gpu_steps: self.gpu_timer.last(),
         });
 
+        !self.should_close()
+    }
+
+    pub(super) async fn wait_for_next_frame() {
         #[cfg(target_arch = "wasm32")]
         {
             use wasm_bindgen::JsCast;
@@ -1551,7 +1641,9 @@ impl Window {
 
             if let Some(window) = web_sys::window() {
                 let (s, r) = oneshot::channel();
-                let closure = Closure::once(move || s.send(()).unwrap());
+                let closure = Closure::once(move || {
+                    let _ = s.send(());
+                });
                 window
                     .request_animation_frame(closure.as_ref().unchecked_ref())
                     .unwrap();
@@ -1559,31 +1651,29 @@ impl Window {
             }
         }
 
-        // Same pacing as the rasterizer path: one frame per winit loop turn.
+        // iOS's analogue of requestAnimationFrame: one frame per winit loop turn.
         #[cfg(target_os = "ios")]
         super::ios::next_frame().await;
-
-        !self.should_close()
     }
 
     /// Acquires the surface texture for the next frame.
     ///
     /// Returns `None` when no frame is available and the caller should skip
-    /// rendering. Until the first frame has been rendered, this retries —
-    /// pumping window events between attempts — for up to a couple of seconds,
-    /// because a freshly created window may need the event loop to run a few
-    /// times before its surface becomes presentable. Once a frame has been
-    /// acquired, a later failure (e.g. a minimized window) skips the frame
+    /// rendering. With `retry_surface` enabled, until the first frame has been
+    /// rendered, this retries — pumping window events between attempts — for up
+    /// to a couple of seconds, because a freshly created window may need the event
+    /// loop to run a few times before its surface becomes presentable. Once a frame
+    /// has been acquired, a later failure (e.g. a minimized window) skips the frame
     /// immediately instead of stalling.
-    fn acquire_next_frame(&mut self) -> Option<wgpu::SurfaceTexture> {
+    fn acquire_next_frame(&mut self, retry_surface: bool) -> Option<wgpu::SurfaceTexture> {
         if let Some(frame) = self.canvas.get_current_texture() {
             self.first_frame = false;
             return Some(frame);
         }
 
-        // The window has rendered before: treat this as a transient failure
-        // and skip the frame without stalling.
-        if !self.first_frame {
+        // Synchronous rendering, or a window that has rendered before: skip the
+        // frame without stalling and let the caller try again later.
+        if !retry_surface || !self.first_frame {
             return None;
         }
 

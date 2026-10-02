@@ -58,14 +58,40 @@ impl OffscreenSurface {
         }
     }
 
+    /// Creates an off-screen surface synchronously using the existing wgpu context.
+    /// Panics unless the context is initialized on the calling thread.
+    pub fn sync_new(width: u32, height: u32) -> OffscreenSurface {
+        OffscreenSurface {
+            window: Window::sync_do_new_headless(width, height, None),
+        }
+    }
+
+    /// Like [`Self::sync_new`], with custom canvas options.
+    /// Device features must already be enabled in the existing context.
+    pub fn sync_with_setup(width: u32, height: u32, setup: CanvasSetup) -> OffscreenSurface {
+        OffscreenSurface {
+            window: Window::sync_do_new_headless(width, height, Some(setup)),
+        }
+    }
+
     /// Renders one frame of a 3D scene into the off-screen texture.
     pub async fn render_3d(&mut self, scene: &mut SceneNode3d, camera: &mut impl Camera3d) {
         let _ = self.window.render_3d(scene, camera).await;
     }
 
+    /// Synchronous counterpart of [`Self::render_3d`].
+    pub fn sync_render_3d(&mut self, scene: &mut SceneNode3d, camera: &mut impl Camera3d) {
+        let _ = self.window.sync_render_3d(scene, camera);
+    }
+
     /// Renders one frame of a 2D scene into the off-screen texture.
     pub async fn render_2d(&mut self, scene: &mut SceneNode2d, camera: &mut impl Camera2d) {
         let _ = self.window.render_2d(scene, camera).await;
+    }
+
+    /// Synchronous counterpart of [`Self::render_2d`].
+    pub fn sync_render_2d(&mut self, scene: &mut SceneNode2d, camera: &mut impl Camera2d) {
+        let _ = self.window.sync_render_2d(scene, camera);
     }
 
     /// Renders one frame with full control over the scenes, cameras, an
@@ -93,6 +119,26 @@ impl OffscreenSurface {
             .await;
     }
 
+    /// Synchronous counterpart of [`render`](Self::render).
+    pub fn sync_render(
+        &mut self,
+        scene: Option<&mut SceneNode3d>,
+        scene_2d: Option<&mut SceneNode2d>,
+        camera: Option<&mut dyn Camera3d>,
+        camera_2d: Option<&mut dyn Camera2d>,
+        renderer: Option<&mut dyn Renderer3d>,
+        post_processing: Option<&mut dyn PostProcessingEffect>,
+    ) {
+        let _ = self.window.sync_render(
+            scene,
+            scene_2d,
+            camera,
+            camera_2d,
+            renderer,
+            post_processing,
+        );
+    }
+
     /// Renders one frame through an ordered chain of post-processing effects.
     /// See [`Window::render_chain`].
     #[allow(clippy::too_many_arguments)]
@@ -118,6 +164,26 @@ impl OffscreenSurface {
             .await;
     }
 
+    /// Synchronous counterpart of [`render_chain`](Self::render_chain).
+    pub fn sync_render_chain(
+        &mut self,
+        scene: Option<&mut SceneNode3d>,
+        scene_2d: Option<&mut SceneNode2d>,
+        camera: Option<&mut dyn Camera3d>,
+        camera_2d: Option<&mut dyn Camera2d>,
+        renderer: Option<&mut dyn Renderer3d>,
+        post_processing: &mut [&mut dyn PostProcessingEffect],
+    ) {
+        let _ = self.window.sync_render_chain(
+            scene,
+            scene_2d,
+            camera,
+            camera_2d,
+            renderer,
+            post_processing,
+        );
+    }
+
     /// Renders one path-traced frame into the off-screen texture.
     ///
     /// Call repeatedly with the same [`RayTracer`] to accumulate samples (the
@@ -130,6 +196,16 @@ impl OffscreenSurface {
         raytracer: &mut RayTracer,
     ) {
         let _ = self.window.raytrace_3d(scene, camera, raytracer).await;
+    }
+
+    /// Synchronous counterpart of [`Self::raytrace_3d`].
+    pub fn sync_raytrace_3d(
+        &mut self,
+        scene: &mut SceneNode3d,
+        camera: &mut impl Camera3d,
+        raytracer: &mut RayTracer,
+    ) {
+        let _ = self.window.sync_raytrace_3d(scene, camera, raytracer);
     }
 
     /// Path-traces a 3D scene for `samples` accumulated frames and returns the

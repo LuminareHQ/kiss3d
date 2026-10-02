@@ -282,9 +282,31 @@ impl Window {
         camera: &mut dyn Camera3d,
         raytracer: &mut RayTracer,
     ) -> bool {
+        let keep_open = self.raytrace_3d_impl(scene, camera, raytracer, true);
+        Self::wait_for_next_frame().await;
+        keep_open
+    }
+
+    /// Synchronous counterpart of [`Self::raytrace_3d`]; see [`Self::sync_render_3d`].
+    pub fn sync_raytrace_3d(
+        &mut self,
+        scene: &mut SceneNode3d,
+        camera: &mut dyn Camera3d,
+        raytracer: &mut RayTracer,
+    ) -> bool {
+        self.raytrace_3d_impl(scene, camera, raytracer, false)
+    }
+
+    pub(super) fn raytrace_3d_impl(
+        &mut self,
+        scene: &mut SceneNode3d,
+        camera: &mut dyn Camera3d,
+        raytracer: &mut RayTracer,
+        retry_surface: bool,
+    ) -> bool {
         let mut default_cam2 = FixedView2d::default();
         self.handle_events(camera, &mut default_cam2);
-        self.raytrace_3d_frame(scene, camera, raytracer).await
+        self.raytrace_3d_frame(scene, camera, raytracer, retry_surface)
     }
 
     /// Sets the window title.
@@ -1097,6 +1119,20 @@ impl Window {
     ) -> Window {
         let (event_send, event_receive) = mpsc::channel();
         let canvas = Canvas::open_headless(width, height, setup, event_send).await;
+        Self::from_headless_canvas(canvas, event_receive)
+    }
+
+    pub(super) fn sync_do_new_headless(
+        width: u32,
+        height: u32,
+        setup: Option<CanvasSetup>,
+    ) -> Window {
+        let (event_send, event_receive) = mpsc::channel();
+        let canvas = Canvas::sync_open_headless(width, height, setup, event_send);
+        Self::from_headless_canvas(canvas, event_receive)
+    }
+
+    fn from_headless_canvas(canvas: Canvas, event_receive: Receiver<WindowEvent>) -> Window {
         let (width, height) = canvas.size();
         // A headless surface is never multisampled.
         let canvas_surface_format = canvas.surface_format();

@@ -75,6 +75,9 @@ macro and `async` rendering API handle the platform differences automatically:
 This approach eliminates the need for platform-specific code or managing different entry points,
 making it simple to write truly cross-platform 3D applications.
 
+If your application already schedules frames, you can call the synchronous function variant,
+`sync_*`, once per frame from your scheduler.
+
 Some controls are handled by default by the engine (they can be overridden by the user):
 
 * `scroll`: zoom in / zoom out.
