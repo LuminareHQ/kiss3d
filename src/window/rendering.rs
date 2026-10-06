@@ -331,7 +331,10 @@ impl Window {
         } else {
             match self.acquire_next_frame(retry_surface) {
                 Some(frame) => Some(frame),
-                None => return !self.should_close(),
+                None => {
+                    self.discard_queued_draws();
+                    return !self.should_close();
+                }
             }
         };
 
@@ -348,13 +351,11 @@ impl Window {
         // No need to update the light position here - it's computed per-frame
         // in the material's prepare() based on the camera position
 
-        // `OffscreenBuffers` are never multisampled, so offscreen rendering
-        // always uses a single sample (a hidden window is not antialiased).
-        let sample_count = if offscreen {
-            1
-        } else {
-            self.canvas.sample_count()
-        };
+        // The scene is rasterized into the HDR film, whose sample count follows
+        // the canvas (a headless canvas included: `OffscreenSurface::set_samples`
+        // and `CanvasSetup::samples`); the film is resolved before tonemapping,
+        // so the single-sample offscreen output target is unaffected.
+        let sample_count = self.canvas.sample_count();
 
         let ctxt = Context::get();
         let mut encoder = ctxt.create_command_encoder(Some("kiss3d_frame_encoder"));
@@ -405,19 +406,11 @@ impl Window {
         let color_view = self.hdr.scene_render_view().clone();
         let resolve_view = self.hdr.scene_resolve_view().cloned();
 
-        // The depth attachment must match the scene target's sample count. The
-        // canvas depth texture is built MSAA-aware; offscreen rendering is always
-        // single-sampled and uses the offscreen target's depth.
-        let depth_view = if offscreen {
-            self.offscreen_output_target
-                .as_ref()
-                .expect("offscreen render target was just created")
-                .depth_view()
-                .expect("offscreen render target is never the screen")
-                .clone()
-        } else {
-            self.canvas.depth_view().clone()
-        };
+        // The depth attachment must match the scene target's sample count: the
+        // canvas depth texture is built MSAA-aware for windows and headless
+        // canvases alike (the offscreen output target's depth stays single-sample
+        // for the AOV and readback paths).
+        let depth_view = self.canvas.depth_view().clone();
 
         // Clear the render target at the start of the frame
         {
@@ -1446,7 +1439,10 @@ impl Window {
         } else {
             match self.acquire_next_frame(retry_surface) {
                 Some(frame) => Some(frame),
-                None => return !self.should_close(),
+                None => {
+                    self.discard_queued_draws();
+                    return !self.should_close();
+                }
             }
         };
 
@@ -1654,6 +1650,16 @@ impl Window {
         // iOS's analogue of requestAnimationFrame: one frame per winit loop turn.
         #[cfg(target_os = "ios")]
         super::ios::next_frame().await;
+    }
+
+    /// Drops the lines, points and text queued for a frame that is skipped.
+    /// Otherwise they pile up while no frame is drawn (e.g. a window on another macOS Space).
+    fn discard_queued_draws(&mut self) {
+        self.polyline_renderer.clear();
+        self.polyline_renderer_2d.clear();
+        self.point_renderer.clear();
+        self.point_renderer_2d.clear();
+        self.text_renderer.clear();
     }
 
     /// Acquires the surface texture for the next frame.
